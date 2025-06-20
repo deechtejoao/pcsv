@@ -8,7 +8,7 @@ Configuration is done via a small TOML colorscheme file.
 ## Features
 
 - UTF-8 borders using **comfy_table**.
-- Automatic detection \& colouring of numbers, booleans, dates and empty cells[^1].
+- Automatic detection \& colouring of numbers, booleans, dates and empty cells.
 - Alternating row background (“zebra”) for readability.
 - Optional row numbers (`-r/--row-numbers`).
 - Truncation of long fields (`-w/--width`, default 40).

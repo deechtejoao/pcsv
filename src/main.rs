@@ -8,66 +8,105 @@ use serde::Deserialize;
 use std::{fs, fs::File};
 
 #[derive(Debug, Deserialize)]
-struct RGB(u8, u8, u8);
+struct RGB {
+    r: u8,
+    g: u8,
+    b: u8,
+}
 
 #[derive(Debug, Deserialize)]
 struct ColorScheme {
+    background: BackgroundColors,
+    text: TextColors,
+    bright: BrightColors,
+    neutral: NeutralColors,
+}
+
+#[derive(Debug, Deserialize)]
+struct BackgroundColors {
     dark0: RGB,
     dark1: RGB,
     dark2: RGB,
     dark3: RGB,
+}
+
+#[derive(Debug, Deserialize)]
+struct TextColors {
     light0: RGB,
     light1: RGB,
     light2: RGB,
-    bright_green: RGB,
-    bright_aqua: RGB,
-    bright_blue: RGB,
-    neutral_blue: RGB,
-    bright_red: RGB,
-    bright_orange: RGB,
-    bright_yellow: RGB,
-    bright_purple: RGB,
-    neutral_purple: RGB,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrightColors {
+    green: RGB,
+    aqua: RGB,
+    blue: RGB,
+    red: RGB,
+    orange: RGB,
+    yellow: RGB,
+    purple: RGB,
+}
+
+#[derive(Debug, Deserialize)]
+struct NeutralColors {
+    blue: RGB,
+    purple: RGB,
 }
 
 impl ColorScheme {
     fn rgb(rgb: &RGB) -> Color {
         Color::Rgb {
-            r: rgb.0,
-            g: rgb.1,
-            b: rgb.2,
+            r: rgb.r,
+            g: rgb.g,
+            b: rgb.b,
         }
     }
+
     fn cell_color(&self, ty: &DataType) -> Color {
         match ty {
-            DataType::Number => Self::rgb(&self.bright_green),
-            DataType::Boolean => Self::rgb(&self.bright_yellow),
-            DataType::Date => Self::rgb(&self.bright_orange),
-            DataType::Empty => Self::rgb(&self.dark3),
-            DataType::Text => Self::rgb(&self.light1),
+            DataType::Number => Self::rgb(&self.bright.green),
+            DataType::Boolean => Self::rgb(&self.bright.yellow),
+            DataType::Date => Self::rgb(&self.bright.orange),
+            DataType::Empty => Self::rgb(&self.background.dark3),
+            DataType::Text => Self::rgb(&self.text.light1),
         }
     }
 }
 
-fn load_scheme() -> Result<ColorScheme> {
-    Ok(ColorScheme {
-        dark0: RGB(40, 40, 40),
-        dark1: RGB(60, 60, 60),
-        dark2: RGB(80, 80, 80),
-        dark3: RGB(100, 100, 100),
-        light0: RGB(200, 200, 200),
-        light1: RGB(180, 180, 180),
-        light2: RGB(160, 160, 160),
-        bright_green: RGB(0, 255, 0),
-        bright_aqua: RGB(0, 255, 255),
-        bright_blue: RGB(0, 0, 255),
-        neutral_blue: RGB(100, 100, 200),
-        bright_red: RGB(255, 0, 0),
-        bright_orange: RGB(255, 165, 0),
-        bright_yellow: RGB(255, 255, 0),
-        bright_purple: RGB(128, 0, 128),
-        neutral_purple: RGB(147, 112, 219),
-    })
+fn load_scheme(path: Option<&str>) -> Result<ColorScheme> {
+    if let Some(p) = path {
+        let toml_str = fs::read_to_string(p)?;
+        let scheme: ColorScheme = toml::from_str(&toml_str)?;
+        Ok(scheme)
+    } else {
+        Ok(ColorScheme {
+            background: BackgroundColors {
+                dark0: RGB { r: 30, g: 30, b: 46 },
+                dark1: RGB { r: 49, g: 50, b: 68 },
+                dark2: RGB { r: 69, g: 71, b: 90 },
+                dark3: RGB { r: 88, g: 91, b: 112 },
+            },
+            text: TextColors {
+                light0: RGB { r: 205, g: 214, b: 244 },
+                light1: RGB { r: 186, g: 194, b: 222 },
+                light2: RGB { r: 166, g: 173, b: 200 },
+            },
+            bright: BrightColors {
+                green: RGB { r: 166, g: 227, b: 161 },
+                aqua: RGB { r: 148, g: 226, b: 213 },
+                blue: RGB { r: 137, g: 180, b: 250 },
+                red: RGB { r: 243, g: 139, b: 168 },
+                orange: RGB { r: 250, g: 179, b: 135 },
+                yellow: RGB { r: 249, g: 226, b: 175 },
+                purple: RGB { r: 203, g: 166, b: 247 },
+            },
+            neutral: NeutralColors {
+                blue: RGB { r: 116, g: 199, b: 236 },
+                purple: RGB { r: 180, g: 190, b: 254 },
+            },
+        })
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -84,6 +123,8 @@ struct Args {
     delimiter: String,
     #[clap(long = "no-header")]
     no_header: bool,
+    #[clap(short = 'c', long = "colorscheme")]
+    colorscheme: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,10 +179,10 @@ fn create_table(
     if let Some(h) = headers {
         let mut cells = Vec::new();
         if args.show_row_numbers {
-            cells.push(Cell::new("#").fg(ColorScheme::rgb(&scheme.light0)));
+            cells.push(Cell::new("#").fg(ColorScheme::rgb(&scheme.text.light0)));
         }
         for name in h {
-            cells.push(Cell::new(name).fg(ColorScheme::rgb(&scheme.light0)));
+            cells.push(Cell::new(name).fg(ColorScheme::rgb(&scheme.text.light0)));
         }
         table.set_header(cells);
     }
@@ -155,7 +196,7 @@ fn create_table(
     for (idx, row) in records.iter().take(max).enumerate() {
         let mut cells = Vec::new();
         if args.show_row_numbers {
-            cells.push(Cell::new((idx + 1).to_string()).fg(ColorScheme::rgb(&scheme.bright_aqua)));
+            cells.push(Cell::new((idx + 1).to_string()).fg(ColorScheme::rgb(&scheme.bright.aqua)));
         }
 
         for field in row {
@@ -214,7 +255,7 @@ fn print_footer(displayed: usize, total: usize) {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let scheme = load_scheme()?;
+    let scheme = load_scheme(args.colorscheme.as_deref())?;
 
     let delim = if args.delimiter.len() == 1 {
         args.delimiter.chars().next().unwrap()
@@ -272,6 +313,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn datatype_detection() {
         assert!(matches!(detect_data_type(""), DataType::Empty));
