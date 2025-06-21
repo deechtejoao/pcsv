@@ -19,7 +19,7 @@ Configuration is done via a small TOML colorscheme file.
 ## Building / Installing
 
 ```bash
-git clone https://github.com/yourname/pcsv
+git clone https://github.com/deechtejoao/pcsv
 cd pcsv
 cargo install --path .
 # or just run in place
