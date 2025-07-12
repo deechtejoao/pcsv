@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use comfy_table::{presets::UTF8_FULL, Cell, Color, ContentArrangement, Table};
 use crossterm::style::{Color as CrosstermColor, Stylize};
+use crossterm::terminal;
 use csv::ReaderBuilder;
 use regex::Regex;
 use serde::Deserialize;
@@ -82,28 +83,92 @@ fn load_scheme(path: Option<&str>) -> Result<ColorScheme> {
     } else {
         Ok(ColorScheme {
             background: BackgroundColors {
-                dark0: RGB { r: 30, g: 30, b: 46 },
-                dark1: RGB { r: 49, g: 50, b: 68 },
-                dark2: RGB { r: 69, g: 71, b: 90 },
-                dark3: RGB { r: 88, g: 91, b: 112 },
+                dark0: RGB {
+                    r: 30,
+                    g: 30,
+                    b: 46,
+                },
+                dark1: RGB {
+                    r: 49,
+                    g: 50,
+                    b: 68,
+                },
+                dark2: RGB {
+                    r: 69,
+                    g: 71,
+                    b: 90,
+                },
+                dark3: RGB {
+                    r: 88,
+                    g: 91,
+                    b: 112,
+                },
             },
             text: TextColors {
-                light0: RGB { r: 205, g: 214, b: 244 },
-                light1: RGB { r: 186, g: 194, b: 222 },
-                light2: RGB { r: 166, g: 173, b: 200 },
+                light0: RGB {
+                    r: 205,
+                    g: 214,
+                    b: 244,
+                },
+                light1: RGB {
+                    r: 186,
+                    g: 194,
+                    b: 222,
+                },
+                light2: RGB {
+                    r: 166,
+                    g: 173,
+                    b: 200,
+                },
             },
             bright: BrightColors {
-                green: RGB { r: 166, g: 227, b: 161 },
-                aqua: RGB { r: 148, g: 226, b: 213 },
-                blue: RGB { r: 137, g: 180, b: 250 },
-                red: RGB { r: 243, g: 139, b: 168 },
-                orange: RGB { r: 250, g: 179, b: 135 },
-                yellow: RGB { r: 249, g: 226, b: 175 },
-                purple: RGB { r: 203, g: 166, b: 247 },
+                green: RGB {
+                    r: 166,
+                    g: 227,
+                    b: 161,
+                },
+                aqua: RGB {
+                    r: 148,
+                    g: 226,
+                    b: 213,
+                },
+                blue: RGB {
+                    r: 137,
+                    g: 180,
+                    b: 250,
+                },
+                red: RGB {
+                    r: 243,
+                    g: 139,
+                    b: 168,
+                },
+                orange: RGB {
+                    r: 250,
+                    g: 179,
+                    b: 135,
+                },
+                yellow: RGB {
+                    r: 249,
+                    g: 226,
+                    b: 175,
+                },
+                purple: RGB {
+                    r: 203,
+                    g: 166,
+                    b: 247,
+                },
             },
             neutral: NeutralColors {
-                blue: RGB { r: 116, g: 199, b: 236 },
-                purple: RGB { r: 180, g: 190, b: 254 },
+                blue: RGB {
+                    r: 116,
+                    g: 199,
+                    b: 236,
+                },
+                purple: RGB {
+                    r: 180,
+                    g: 190,
+                    b: 254,
+                },
             },
         })
     }
@@ -173,8 +238,25 @@ fn create_table(
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_width(120);
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
+    // Detect terminal width
+    let term_width = terminal::size().map(|(w, _)| w).unwrap_or(80) as usize;
+
+    let effective_table_width = if args.max_width >= 100 {
+        ((args.max_width as f64 / 100.0) * term_width as f64) as u16
+    } else {
+        120
+    };
+
+    if effective_table_width > 0 {
+        table.set_width(effective_table_width);
+    }
 
     if let Some(h) = headers {
         let mut cells = Vec::new();
