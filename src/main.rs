@@ -182,8 +182,8 @@ struct Args {
     max_rows: usize,
     #[clap(short = 'r', long = "row-numbers")]
     show_row_numbers: bool,
-    #[clap(short = 'w', long = "width", default_value = "40")]
-    max_width: usize,
+    #[clap(short = 'w', long = "width")]
+    max_width: Option<usize>, // Optional, default None for full terminal
     #[clap(short = 'd', long = "delimiter", default_value = ",")]
     delimiter: String,
     #[clap(long = "no-header")]
@@ -248,10 +248,10 @@ fn create_table(
     // Detect terminal width
     let term_width = terminal::size().map(|(w, _)| w).unwrap_or(80) as usize;
 
-    let effective_table_width = if args.max_width >= 100 {
-        ((args.max_width as f64 / 100.0) * term_width as f64) as u16
-    } else {
-        120
+    let effective_table_width = match args.max_width {
+        None => term_width as u16, // -w without value: full terminal width
+        Some(n) if n >= 100 => (((n as f64 / 100.0) * term_width as f64) as u16).max(1),
+        Some(n) => n as u16,
     };
 
     if effective_table_width > 0 {
@@ -282,11 +282,13 @@ fn create_table(
         }
 
         for field in row {
+            let max_field_width = args.max_width.unwrap_or(usize::MAX); // Use MAX if None
             let mut txt = field.clone();
-            if txt.len() > args.max_width {
-                txt.truncate(args.max_width.saturating_sub(3));
+            if txt.len() > max_field_width {
+                txt.truncate(max_field_width.saturating_sub(3));
                 txt.push_str("...");
             }
+
             let ty = detect_data_type(&txt);
             cells.push(Cell::new(txt).fg(scheme.cell_color(&ty)));
         }
