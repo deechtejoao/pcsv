@@ -6,7 +6,11 @@ use crossterm::terminal;
 use csv::ReaderBuilder;
 use regex::Regex;
 use serde::Deserialize;
+use std::io::BufReader;
 use std::{fs, fs::File};
+
+const CHUNK_SIZE: usize = 10000;
+const BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct RGB {
@@ -72,6 +76,38 @@ impl ColorScheme {
             DataType::Empty => Self::rgb(&self.background.dark3),
             DataType::Text => Self::rgb(&self.text.light1),
         }
+    }
+}
+
+struct StreamingCsvReader<R: std::io::Read> {
+    reader: csv::Reader<BufReader<File>>,
+    chunk_size: usize,
+}
+
+impl StreamingCsvReader<R: std::io::Read> {
+    fn new(file: File, delimiter: u8, has_headers: bool) -> Result<Self> {
+        let buffered = BufReader::with_capacity(BUFFER_SIZE, file);
+        let reader = ReaderBuilder::new()
+            .delimiter(delimiter)
+            .has_headers(has_headers)
+            .from_reader(buffered);
+        Ok(Self {
+            reader,
+            chunk_size: CHUNK_SIZE,
+        })
+    }
+    fn read_chunk(&mut self) -> Result<Vec<Vec<String>>> {
+        let mut chunk = Vec::with_capacity(self.chunk_size);
+        for _ in 0..self.chunk_size {
+            match self.reader.records().next() {
+                Some(Ok(record)) => {
+                    chunk.push(record.iter().map(|s| s.to_string()).collect());
+                }
+                Some(Err(e)) => return Err(anyhow::anyhow!("Error reading CSV record: {}", e)),
+                None => break,
+            }
+        }
+        Ok(chunk)
     }
 }
 
