@@ -4,6 +4,7 @@ use comfy_table::{presets::UTF8_FULL, Cell, Color, ContentArrangement, Table};
 use crossterm::style::{Color as CrosstermColor, Stylize};
 use crossterm::terminal;
 use csv::ReaderBuilder;
+use rayon::prelude::*;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -320,60 +321,52 @@ fn create_table(
         .load_preset(UTF8_FULL)
         .set_content_arrangement(ContentArrangement::Dynamic);
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic);
-
-    // Detect terminal width
     let term_width = terminal::size().map(|(w, _)| w).unwrap_or(80) as usize;
-
-    let effective_table_width = match args.max_width {
-        None => term_width as u16, // -w without value: full terminal width
-        Some(n) if n >= 100 => (((n as f64 / 100.0) * term_width as f64) as u16).max(1),
-        Some(n) => n as u16,
-    };
-
-    if effective_table_width > 0 {
-        table.set_width(effective_table_width);
+    let effective_width = calculate_effective_width(args, term_width);
+    if effective_width > 0 {
+        table.set_width(effective_width.try_into().unwrap_or(u16::MAX));
     }
 
     if let Some(h) = headers {
-        let mut cells = Vec::new();
-        if args.show_row_numbers {
-            cells.push(Cell::new("#").fg(ColorScheme::rgb(&scheme.text.light0)));
-        }
-        for name in h {
-            cells.push(Cell::new(name).fg(ColorScheme::rgb(&scheme.text.light0)));
-        }
-        table.set_header(cells);
+        let header_cells: Vec<Cell> = if args.show_row_numbers {
+            std::iter::once(Cell::new("#").fg(ColorScheme::rgb(&scheme.text.light0)))
+                .chain(
+                    h.iter()
+                        .map(|name| Cell::new(name).fg(ColorScheme::rgb(&scheme.text.light0))),
+                )
+                .collect()
+        } else {
+            h.iter()
+                .map(|name| Cell::new(name).fg(ColorScheme::rgb(&scheme.text.light0)))
+                .collect()
+        };
+        table.set_header(header_cells);
     }
 
-    let max = if args.max_rows == 0 {
+    let max_rows = if args.max_rows == 0 {
         records.len()
     } else {
         args.max_rows.min(records.len())
     };
 
-    for (idx, row) in records.iter().take(max).enumerate() {
-        let mut cells = Vec::new();
-        if args.show_row_numbers {
-            cells.push(Cell::new((idx + 1).to_string()).fg(ColorScheme::rgb(&scheme.bright.aqua)));
-        }
+    let chunk_size = (max_rows / rayon::current_num_threads()).max(80);
+    let processed_rows: Vec<Vec<Cell>> = records
+        .par_chunks(chunk_size)
+        .enumerate()
+        .flat_map(|(chunk_idx, chunk)| {
+            chunk.par_iter().enumerate().map(move |(row_idx, row)| {
+                let global_idx = chunk_idx * chunk_size + row_idx;
+                if global_idx >= max_rows {
+                    return vec![];
+                }
+                process_row_parallel(row, global_idx, args, scheme)
+            })
+        })
+        .filter(|row| !row.is_empty())
+        .collect();
 
-        for field in row {
-            let max_field_width = args.max_width.unwrap_or(usize::MAX); // Use MAX if None
-            let mut txt = field.clone();
-            if txt.len() > max_field_width {
-                txt.truncate(max_field_width.saturating_sub(3));
-                txt.push_str("...");
-            }
-
-            let ty = detect_data_type(&txt);
-            cells.push(Cell::new(txt).fg(scheme.cell_color(&ty)));
-        }
-
-        table.add_row(cells);
+    for row in processed_rows {
+        table.add_row(row);
     }
     table
 }
