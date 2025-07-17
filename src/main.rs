@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use comfy_table::{presets::UTF8_FULL, Cell, Color, ContentArrangement, Table};
+use crossbeam_channel::bounded;
 use crossterm::style::{Color as CrosstermColor, Stylize};
 use crossterm::terminal;
 use csv::ReaderBuilder;
@@ -9,7 +10,7 @@ use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::BufReader;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::{fs, fs::File};
 
 const CHUNK_SIZE: usize = 10000;
@@ -82,12 +83,12 @@ impl ColorScheme {
     }
 }
 
-struct StreamingCsvReader<R: std::io::Read> {
+struct StreamingCsvReader {
     reader: csv::Reader<BufReader<File>>,
     chunk_size: usize,
 }
 
-impl StreamingCsvReader<R: std::io::Read> {
+impl StreamingCsvReader {
     fn new(file: File, delimiter: u8, has_headers: bool) -> Result<Self> {
         let buffered = BufReader::with_capacity(BUFFER_SIZE, file);
         let reader = ReaderBuilder::new()
@@ -292,11 +293,11 @@ fn detect_data_type(val: &str) -> DataType {
     DataType::Text
 }
 
-fn calculate_effective_width(max_width: Option<usize>, term_width: usize) -> u16 {
-    match max_width {
-        None => term_width as u16, // Full terminal width
-        Some(n) if n >= 100 => (((n as f64 / 100.0) * term_width as f64) as u16).max(1),
-        Some(n) => n as u16,
+fn calculate_effective_width(args: &Args, term_width: usize) -> usize {
+    match args.max_width {
+        None => term_width,
+        Some(n) if n >= 100 => ((n as f64 / 100.0) * term_width as f64) as usize,
+        Some(n) => n,
     }
 }
 
@@ -436,61 +437,78 @@ fn print_footer(displayed: usize, total: usize) {
     }
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    let scheme = load_scheme(args.colorscheme.as_deref())?;
+fn process_large_file(
+    file: File,
+    args: &Args,
+    scheme: &Arc<ColorScheme>,
+    delim: char,
+) -> Result<()> {
+    let mut reader = StreamingCsvReader::new(file, delim as u8, !args.no_header)?;
+    let (tx, rx) = bounded(4);
 
-    let delim = if args.delimiter.len() == 1 {
-        args.delimiter.chars().next().unwrap()
-    } else {
-        return Err(anyhow::anyhow!("Delimiter must be a single character"));
-    };
+    let reader_handle = std::thread::spawn(move || {
+        while let Ok(chunk) = reader.read_chunk() {
+            if chunk.is_empty() {
+                break; // Channel closed
+            }
+
+            if tx.send(chunk).is_err() {
+                break; // Receiver dropped
+            }
+        }
+    });
+
+    let mut total_rows = 0;
+    let mut first_chunk = true;
+
+    while let Ok(chunk) = rx.recv() {
+        total_rows += chunk.len();
+
+        if first_chunk {
+            print_file_info(
+                &args.file,
+                total_rows,
+                chunk.first().map(|r| r.len()).unwrap_or(0),
+            );
+            first_chunk = false;
+        }
+
+        let table = create_table(&chunk, None, args, &scheme);
+        println!("{table}");
+        if args.max_rows > 0 && total_rows >= args.max_rows {
+            break; // Stop if max rows reached
+        }
+    }
+    reader_handle.join().unwrap();
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_cpus::get() + 2)
+        .build_global()
+        .unwrap();
+
+    let args = Args::parse();
+    let scheme = Arc::new(load_scheme(args.colorscheme.as_deref())?);
+
+    let delim = args
+        .delimiter
+        .chars()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Delimiter must be a single character"))?;
 
     let file = File::open(&args.file)
-        .map_err(|e| anyhow::anyhow!("Cannot open '{}': {}", &args.file, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to open file '{}': {}", args.file, e))?;
 
-    let mut rdr = ReaderBuilder::new()
-        .delimiter(delim as u8)
-        .has_headers(!args.no_header)
-        .from_reader(file);
+    let metadata = file.metadata()?;
+    let use_streaming = metadata.len() > 100 * 1024 * 1024;
 
-    let headers = if args.no_header {
-        None
+    if use_streaming {
+        process_large_file(file, &args, &scheme, delim)
     } else {
-        Some(
-            rdr.headers()?
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>(),
-        )
-    };
-
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    for rec in rdr.records() {
-        let rec = rec?;
-        rows.push(rec.iter().map(|s| s.to_string()).collect());
+        process_small_file(file, &args, &scheme, delim)
     }
-
-    let total_rows = rows.len();
-    let total_cols = headers
-        .as_ref()
-        .map(|h| h.len())
-        .or_else(|| rows.first().map(|r| r.len()))
-        .unwrap_or(0);
-
-    print_file_info(&args.file, total_rows, total_cols);
-
-    let table = create_table(&rows, headers.as_deref(), &args, &scheme);
-    println!("{table}");
-
-    let shown = if args.max_rows == 0 {
-        total_rows
-    } else {
-        args.max_rows.min(total_rows)
-    };
-    print_footer(shown, total_rows);
-
-    Ok(())
 }
 
 #[cfg(test)]
