@@ -6,7 +6,9 @@ use crossterm::terminal;
 use csv::ReaderBuilder;
 use regex::Regex;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::BufReader;
+use std::sync::OnceLock;
 use std::{fs, fs::File};
 
 const CHUNK_SIZE: usize = 10000;
@@ -108,6 +110,40 @@ impl StreamingCsvReader<R: std::io::Read> {
             }
         }
         Ok(chunk)
+    }
+}
+
+static DATA_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+static TYPE_CACHE: OnceLock<HashMap<String, DataType>> = OnceLock::new();
+
+fn init_patterns() -> Vec<Regex> {
+    vec![
+        Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap(), // YYYY-MM-DD
+        Regex::new(r"^\d{2}/\d{2}/\d{4}$").unwrap(), // DD/MM/YYYY
+        Regex::new(r"^\d{2}-\d{2}-\d{4}$").unwrap(), // DD-MM-YYYY
+    ]
+}
+
+fn detect_data_type_cached(val: &str) -> DataType {
+    if let Some(patterns) = DATA_PATTERNS.get() {
+        for pattern in patterns {
+            if pattern.is_match(val) {
+                return DataType::Date;
+            }
+        }
+    } else {
+        let patterns = init_patterns();
+        DATA_PATTERNS.set(patterns).unwrap();
+    }
+
+    if val.trim().is_empty() {
+        return DataType::Empty;
+    }
+
+    match val.to_lowercase().as_str() {
+        "true" | "false" | "yes" | "no" | "y" | "n" => DataType::Boolean,
+        _ if val.parse::<f64>().is_ok() => DataType::Number,
+        _ => DataType::Text,
     }
 }
 
@@ -253,6 +289,14 @@ fn detect_data_type(val: &str) -> DataType {
         return DataType::Date;
     }
     DataType::Text
+}
+
+fn calculate_effective_width(max_width: Option<usize>, term_width: usize) -> u16 {
+    match max_width {
+        None => term_width as u16, // Full terminal width
+        Some(n) if n >= 100 => (((n as f64 / 100.0) * term_width as f64) as u16).max(1),
+        Some(n) => n as u16,
+    }
 }
 
 fn is_date_like(s: &str) -> bool {
