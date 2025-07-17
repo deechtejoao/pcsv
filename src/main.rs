@@ -359,7 +359,7 @@ fn create_table(
                 if global_idx >= max_rows {
                     return vec![];
                 }
-                process_row_parallel(row, global_idx, args, scheme)
+                process_row(row, global_idx, args, scheme)
             })
         })
         .filter(|row| !row.is_empty())
@@ -369,6 +369,32 @@ fn create_table(
         table.add_row(row);
     }
     table
+}
+
+fn process_row(row: &[String], idx: usize, args: &Args, scheme: &ColorScheme) -> Vec<Cell> {
+    let mut cells = Vec::with_capacity(row.len() + if args.show_row_numbers { 1 } else { 0 });
+
+    if args.show_row_numbers {
+        cells.push(Cell::new((idx + 1).to_string()).fg(ColorScheme::rgb(&scheme.bright.aqua)));
+    }
+
+    let field_cells: Vec<Cell> = row
+        .par_iter()
+        .map(|field| {
+            let max_width = args.max_width.unwrap_or(usize::MAX);
+            let txt = if field.len() > max_width {
+                format!("{}...", &field[..max_width.saturating_sub(3)])
+            } else {
+                field.clone()
+            };
+
+            let data_type = detect_data_type_cached(&txt);
+            Cell::new(txt).fg(scheme.cell_color(&data_type))
+        })
+        .collect();
+
+    cells.extend(field_cells);
+    cells
 }
 
 fn print_file_info(path: &str, rows: usize, cols: usize) {
