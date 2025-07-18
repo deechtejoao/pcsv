@@ -127,15 +127,12 @@ fn init_patterns() -> Vec<Regex> {
 }
 
 fn detect_data_type_cached(val: &str) -> DataType {
-    if let Some(patterns) = DATA_PATTERNS.get() {
-        for pattern in patterns {
-            if pattern.is_match(val) {
-                return DataType::Date;
-            }
+    let patterns = DATA_PATTERNS.get_or_init(|| init_patterns());
+
+    for pattern in patterns {
+        if pattern.is_match(val) {
+            return DataType::Date;
         }
-    } else {
-        let patterns = init_patterns();
-        DATA_PATTERNS.set(patterns).unwrap();
     }
 
     if val.trim().is_empty() {
@@ -480,6 +477,56 @@ fn process_large_file(
         }
     }
     reader_handle.join().unwrap();
+    Ok(())
+}
+
+fn process_small_file(
+    file: File,
+    args: &Args,
+    scheme: &Arc<ColorScheme>,
+    delim: char,
+) -> Result<()> {
+    let mut rdr = ReaderBuilder::new()
+        .delimiter(delim as u8)
+        .has_headers(!args.no_header)
+        .from_reader(file);
+
+    let headers = if args.no_header {
+        None
+    } else {
+        Some(
+            rdr.headers()?
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>(),
+        )
+    };
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for rec in rdr.records() {
+        let rec = rec?;
+        rows.push(rec.iter().map(|s| s.to_string()).collect());
+    }
+
+    let total_rows = rows.len();
+    let total_cols = headers
+        .as_ref()
+        .map(|h| h.len())
+        .or_else(|| rows.first().map(|r| r.len()))
+        .unwrap_or(0);
+
+    print_file_info(&args.file, total_rows, total_cols);
+
+    let table = create_table(&rows, headers.as_deref(), args, scheme);
+    println!("{table}");
+
+    let shown = if args.max_rows == 0 {
+        total_rows
+    } else {
+        args.max_rows.min(total_rows)
+    };
+
+    print_footer(shown, total_rows);
     Ok(())
 }
 
