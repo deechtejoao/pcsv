@@ -1,23 +1,11 @@
-# pcsv – Pretty CSV Viewer
+# Pcsv – Pretty CSV Viewer
 
 
-![image](images/1.png)
-A fast, ncurses-free CLI utility that prints CSV/TSV files as colored, width-aware tables.
-Configuration is done via a small TOML colorscheme file.
+![image](images/1.jpg)
 
-## Features
+A Rust-based command-line CSV viewer that automatically detects data types and applies intelligent color coding for enhanced data visualization. PCSV transforms plain CSV files into beautifully formatted, color-coded tables that make data patterns instantly recognizable.
 
-- UTF-8 borders using **comfy_table**.
-- Automatic detection \& colouring of numbers, booleans, dates and empty cells.
-- Alternating row background (“zebra”) for readability.
-- Optional row numbers (`-r/--row-numbers`).
-- Truncation of long fields (`-w/--width`, default 40).
-- Display a subset of rows (`-n/--rows`, `0` = all).
-- Pluggable colour schemes (`-c/--colors`, TOML file).
-
-
-## Building / Installing
-
+## Installation
 ```bash
 git clone https://github.com/deechtejoao/pcsv
 cd pcsv
@@ -29,70 +17,43 @@ cargo run -- examples/data.csv
 
 ## Usage
 
-```text
-pcsv <FILE> [OPTIONS]
-
-Options:
-  -n, --rows <N>        Max rows to print (0 = all, default 50)
-  -r, --row-numbers     Show row index
-  -w, --width <N>       Max column width (default 40)
-  -d, --delimiter <c>   Field delimiter (default “,”)
-      --no-header       Treat first row as data, not header
-  -c, --colors <FILE>   Colour-scheme TOML
-  -h, --help            Show help
-  -V, --version         Show version
-```
-
-Examples:
-
 ```bash
-# basic
-pcsv data.csv
+# View a CSV file
+pcsv file.csv
 
-# tab-separated
-pcsv data.tsv -d '\t'
+# Read from stdin
+pcsv file.csv 
 
-# full file, no truncation, Catppuccin palette
-pcsv data.csv -n 0 -w 0 -c catppuccin.toml
+# Show row numbers
+pcsv -s file.csv
+
+# Limit to first 50 rows
+pcsv -m 50 large_file.csv
+
+# Use custom configuration
+pcsv -c /path/to/config.toml data.csv
 ```
-
+![image2](images/2.jpg) 
 
 ## Colorschemes
-
-Create a `.toml` file with the exact keys below; each value is an RGB triple:
-
-```toml
-dark0          = [30, 30, 46]   # background even rows
-dark1          = [49, 50, 68]   # background odd  rows
-dark2          = [69, 71, 90]   # unused (spare)
-dark3          = [88, 91, 112]  # colour for “empty” cells
-
-light0         = [205, 214, 244]  # header / generic text
-light1         = [186, 194, 222]  # plain cell text
-light2         = [166, 173, 200]  # spare
-
-bright_green   = [166, 227, 161]  # numbers
-bright_aqua    = [148, 226, 213]  # row index
-bright_blue    = [137, 180, 250]  # (unused after v0.2)
-
-neutral_blue   = [116, 199, 236]  # spare
-
-bright_red     = [243, 139, 168]  # *reserved*
-bright_orange  = [250, 179, 135]  # dates
-bright_yellow  = [249, 226, 175]  # booleans
-
-bright_purple  = [203, 166, 247]  # *reserved*
-neutral_purple = [180, 190, 254]  # *reserved*
-```
-
-
-## Testing
-
 ```bash
-cargo test
+# Create a new directory for your custom Colorscheme 
+mkdir ~/.config/pcsv/
+# Create your config.toml file
+touch ~/.config/pcsv/pcsv.toml
 ```
+>  Edit file with your editor and add your color scheme, for example:
+```toml
+header = "#83A598"
 
+[data_types]
+text = "#EBDBB2"    
+date = "#FE8019"         
+float_number = "#B8BB26"   
+int_number = "#83A598"     
+boolean = "#FABD2F"        
+empty = "#504945"          
+
+```
 ---
-
-
-
+![image3](images/3.jpg)

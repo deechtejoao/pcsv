@@ -1,134 +1,81 @@
-use anyhow::Result;
 use clap::Parser;
-use comfy_table::{presets::UTF8_FULL, Cell, Color, ContentArrangement, Table};
-use crossbeam_channel::bounded;
-use crossterm::style::{Color as CrosstermColor, Stylize};
-use crossterm::terminal;
-use csv::ReaderBuilder;
-use rayon::prelude::*;
+use comfy_table::presets::UTF8_FULL;
+use comfy_table::{Cell, Color, Table};
+use config::{load_config, ColorScheme};
 use regex::Regex;
-use serde::Deserialize;
-use std::collections::HashMap;
-use std::io::BufReader;
-use std::sync::{Arc, OnceLock};
-use std::{fs, fs::File};
+use std::fs;
+use std::io::{self, Read};
+use std::sync::OnceLock;
 
-const CHUNK_SIZE: usize = 10000;
-const BUFFER_SIZE: usize = 64 * 1024;
+mod config;
 
-#[derive(Debug, Deserialize)]
-struct RGB {
-    r: u8,
-    g: u8,
-    b: u8,
-}
-
-#[derive(Debug, Deserialize)]
-struct ColorScheme {
-    background: BackgroundColors,
-    text: TextColors,
-    bright: BrightColors,
-    neutral: NeutralColors,
-}
-
-#[derive(Debug, Deserialize)]
-struct BackgroundColors {
-    dark0: RGB,
-    dark1: RGB,
-    dark2: RGB,
-    dark3: RGB,
-}
-
-#[derive(Debug, Deserialize)]
-struct TextColors {
-    light0: RGB,
-    light1: RGB,
-    light2: RGB,
-}
-
-#[derive(Debug, Deserialize)]
-struct BrightColors {
-    green: RGB,
-    aqua: RGB,
-    blue: RGB,
-    red: RGB,
-    orange: RGB,
-    yellow: RGB,
-    purple: RGB,
-}
-
-#[derive(Debug, Deserialize)]
-struct NeutralColors {
-    blue: RGB,
-    purple: RGB,
+#[derive(Debug, Clone)]
+enum DataType {
+    Text,
+    IntNumber,
+    FloatNumber,
+    Boolean,
+    Date,
+    Empty,
 }
 
 impl ColorScheme {
-    fn rgb(rgb: &RGB) -> Color {
-        Color::Rgb {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b,
-        }
+    fn hex_to_color(hex: &str) -> Color {
+        let hex = hex.trim_start_matches('#');
+        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+        Color::Rgb { r, g, b } // Changed from Color::Rgb(r, g, b)
     }
 
     fn cell_color(&self, ty: &DataType) -> Color {
-        match ty {
-            DataType::Number => Self::rgb(&self.bright.green),
-            DataType::Boolean => Self::rgb(&self.bright.yellow),
-            DataType::Date => Self::rgb(&self.bright.orange),
-            DataType::Empty => Self::rgb(&self.background.dark3),
-            DataType::Text => Self::rgb(&self.text.light1),
-        }
+        let hex = match ty {
+            DataType::IntNumber => &self.data_types.int_number,
+            DataType::FloatNumber => &self.data_types.float_number,
+            DataType::Boolean => &self.data_types.boolean,
+            DataType::Date => &self.data_types.date,
+            DataType::Empty => &self.data_types.empty,
+            DataType::Text => &self.data_types.text,
+        };
+        Self::hex_to_color(hex)
+    }
+
+    fn header_color(&self) -> Color {
+        Self::hex_to_color(&self.header)
     }
 }
 
-struct StreamingCsvReader {
-    reader: csv::Reader<BufReader<File>>,
-    chunk_size: usize,
-}
+#[derive(Parser)]
+#[command(name = "csv-viewer")]
+#[command(about = "A colorful CSV viewer")]
+struct Args {
+    input: String,
 
-impl StreamingCsvReader {
-    fn new(file: File, delimiter: u8, has_headers: bool) -> Result<Self> {
-        let buffered = BufReader::with_capacity(BUFFER_SIZE, file);
-        let reader = ReaderBuilder::new()
-            .delimiter(delimiter)
-            .has_headers(has_headers)
-            .from_reader(buffered);
-        Ok(Self {
-            reader,
-            chunk_size: CHUNK_SIZE,
-        })
-    }
-    fn read_chunk(&mut self) -> Result<Vec<Vec<String>>> {
-        let mut chunk = Vec::with_capacity(self.chunk_size);
-        for _ in 0..self.chunk_size {
-            match self.reader.records().next() {
-                Some(Ok(record)) => {
-                    chunk.push(record.iter().map(|s| s.to_string()).collect());
-                }
-                Some(Err(e)) => return Err(anyhow::anyhow!("Error reading CSV record: {}", e)),
-                None => break,
-            }
-        }
-        Ok(chunk)
-    }
+    #[arg(short, long)]
+    show_row_numbers: bool,
+
+    #[arg(short, long)]
+    config: Option<String>,
+
+    #[arg(short, long)]
+    max_rows: Option<usize>,
 }
 
 static DATA_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
-static TYPE_CACHE: OnceLock<HashMap<String, DataType>> = OnceLock::new();
 
 fn init_patterns() -> Vec<Regex> {
     vec![
         Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap(), // YYYY-MM-DD
-        Regex::new(r"^\d{2}/\d{2}/\d{4}$").unwrap(), // DD/MM/YYYY
-        Regex::new(r"^\d{2}-\d{2}-\d{4}$").unwrap(), // DD-MM-YYYY
+        Regex::new(r"^\d{2}/\d{2}/\d{4}$").unwrap(), // MM/DD/YYYY
+        Regex::new(r"^\d{2}-\d{2}-\d{4}$").unwrap(), // MM-DD-YYYY
+        Regex::new(r"^\d{4}/\d{2}/\d{2}$").unwrap(), // YYYY/MM/DD
+        Regex::new(r"^\d{1,2}/\d{1,2}/\d{4}$").unwrap(), // M/D/YYYY
+        Regex::new(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$").unwrap(), // YYYY-MM-DD HH:MM:SS
     ]
 }
 
 fn detect_data_type_cached(val: &str) -> DataType {
     let patterns = DATA_PATTERNS.get_or_init(|| init_patterns());
-
     for pattern in patterns {
         if pattern.is_match(val) {
             return DataType::Date;
@@ -141,433 +88,106 @@ fn detect_data_type_cached(val: &str) -> DataType {
 
     match val.to_lowercase().as_str() {
         "true" | "false" | "yes" | "no" | "y" | "n" => DataType::Boolean,
-        _ if val.parse::<f64>().is_ok() => DataType::Number,
-        _ => DataType::Text,
+        _ => {
+            if let Ok(_num) = val.parse::<f64>() {
+                if val.contains('.') || val.to_lowercase().contains('e') {
+                    DataType::FloatNumber
+                } else if val.parse::<i64>().is_ok() {
+                    DataType::IntNumber
+                } else {
+                    DataType::FloatNumber
+                }
+            } else {
+                DataType::Text
+            }
+        }
     }
 }
 
-fn load_scheme(path: Option<&str>) -> Result<ColorScheme> {
-    if let Some(p) = path {
-        let toml_str = fs::read_to_string(p)?;
-        let scheme: ColorScheme = toml::from_str(&toml_str)?;
-        Ok(scheme)
+fn read_csv_data(
+    input: &str,
+) -> Result<(Option<Vec<String>>, Vec<Vec<String>>), Box<dyn std::error::Error>> {
+    let content = if input == "-" {
+        let mut buffer = String::new();
+        io::stdin().read_to_string(&mut buffer)?;
+        buffer
     } else {
-        Ok(ColorScheme {
-            background: BackgroundColors {
-                dark0: RGB {
-                    r: 30,
-                    g: 30,
-                    b: 46,
-                },
-                dark1: RGB {
-                    r: 49,
-                    g: 50,
-                    b: 68,
-                },
-                dark2: RGB {
-                    r: 69,
-                    g: 71,
-                    b: 90,
-                },
-                dark3: RGB {
-                    r: 88,
-                    g: 91,
-                    b: 112,
-                },
-            },
-            text: TextColors {
-                light0: RGB {
-                    r: 205,
-                    g: 214,
-                    b: 244,
-                },
-                light1: RGB {
-                    r: 186,
-                    g: 194,
-                    b: 222,
-                },
-                light2: RGB {
-                    r: 166,
-                    g: 173,
-                    b: 200,
-                },
-            },
-            bright: BrightColors {
-                green: RGB {
-                    r: 166,
-                    g: 227,
-                    b: 161,
-                },
-                aqua: RGB {
-                    r: 148,
-                    g: 226,
-                    b: 213,
-                },
-                blue: RGB {
-                    r: 137,
-                    g: 180,
-                    b: 250,
-                },
-                red: RGB {
-                    r: 243,
-                    g: 139,
-                    b: 168,
-                },
-                orange: RGB {
-                    r: 250,
-                    g: 179,
-                    b: 135,
-                },
-                yellow: RGB {
-                    r: 249,
-                    g: 226,
-                    b: 175,
-                },
-                purple: RGB {
-                    r: 203,
-                    g: 166,
-                    b: 247,
-                },
-            },
-            neutral: NeutralColors {
-                blue: RGB {
-                    r: 116,
-                    g: 199,
-                    b: 236,
-                },
-                purple: RGB {
-                    r: 180,
-                    g: 190,
-                    b: 254,
-                },
-            },
-        })
-    }
-}
+        fs::read_to_string(input)?
+    };
 
-#[derive(Parser, Debug)]
-#[clap(name = "csv-viewer", version, about)]
-struct Args {
-    file: String,
-    #[clap(short = 'n', long = "rows", default_value = "50")]
-    max_rows: usize,
-    #[clap(short = 'r', long = "row-numbers")]
-    show_row_numbers: bool,
-    #[clap(short = 'w', long = "width")]
-    max_width: Option<usize>, // Optional, default None for full terminal
-    #[clap(short = 'd', long = "delimiter", default_value = ",")]
-    delimiter: String,
-    #[clap(long = "no-header")]
-    no_header: bool,
-    #[clap(short = 'c', long = "colorscheme")]
-    colorscheme: Option<String>,
-}
+    let mut rdr = csv::Reader::from_reader(content.as_bytes());
+    let headers = if rdr.has_headers() {
+        Some(rdr.headers()?.iter().map(|s| s.to_string()).collect())
+    } else {
+        None
+    };
 
-#[derive(Debug, Clone)]
-enum DataType {
-    Text,
-    Number,
-    Boolean,
-    Date,
-    Empty,
-}
+    let mut records = Vec::new();
+    for result in rdr.records() {
+        let record = result?;
+        records.push(record.iter().map(|s| s.to_string()).collect());
+    }
 
-fn detect_data_type(val: &str) -> DataType {
-    let s = val.trim();
-    if s.is_empty() {
-        return DataType::Empty;
-    }
-    match s.to_lowercase().as_str() {
-        "true" | "false" | "yes" | "no" | "y" | "n" => return DataType::Boolean,
-        _ => {}
-    }
-    if s.parse::<f64>().is_ok() {
-        return DataType::Number;
-    }
-    if is_date_like(s) {
-        return DataType::Date;
-    }
-    DataType::Text
-}
-
-fn calculate_effective_width(args: &Args, term_width: usize) -> usize {
-    match args.max_width {
-        None => term_width,
-        Some(n) if n >= 100 => ((n as f64 / 100.0) * term_width as f64) as usize,
-        Some(n) => n,
-    }
-}
-
-fn is_date_like(s: &str) -> bool {
-    const PATS: [&str; 3] = [
-        r"^\d{4}-\d{2}-\d{2}$",
-        r"^\d{2}/\d{2}/\d{4}$",
-        r"^\d{2}-\d{2}-\d{4}$",
-    ];
-    PATS.iter()
-        .any(|p| Regex::new(p).map(|re| re.is_match(s)).unwrap_or(false))
+    Ok((headers, records))
 }
 
 fn create_table(
-    records: &[Vec<String>],
-    headers: Option<&[String]>,
-    args: &Args,
+    headers: Option<Vec<String>>,
+    records: Vec<Vec<String>>,
     scheme: &ColorScheme,
+    args: &Args,
 ) -> Table {
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(ContentArrangement::Dynamic);
 
-    let term_width = terminal::size().map(|(w, _)| w).unwrap_or(80) as usize;
-    let effective_width = calculate_effective_width(args, term_width);
-    if effective_width > 0 {
-        table.set_width(effective_width.try_into().unwrap_or(u16::MAX));
-    }
-
+    table.load_preset(UTF8_FULL);
+    // Set headers with colors
     if let Some(h) = headers {
         let header_cells: Vec<Cell> = if args.show_row_numbers {
-            std::iter::once(Cell::new("#").fg(ColorScheme::rgb(&scheme.text.light0)))
+            std::iter::once(Cell::new("#").fg(scheme.header_color()))
                 .chain(
                     h.iter()
-                        .map(|name| Cell::new(name).fg(ColorScheme::rgb(&scheme.text.light0))),
+                        .map(|name| Cell::new(name).fg(scheme.header_color())),
                 )
                 .collect()
         } else {
             h.iter()
-                .map(|name| Cell::new(name).fg(ColorScheme::rgb(&scheme.text.light0)))
+                .map(|name| Cell::new(name).fg(scheme.header_color()))
                 .collect()
         };
         table.set_header(header_cells);
     }
 
-    let max_rows = if args.max_rows == 0 {
-        records.len()
+    let limited_records = if let Some(max) = args.max_rows {
+        records.into_iter().take(max).collect::<Vec<_>>()
     } else {
-        args.max_rows.min(records.len())
+        records
     };
 
-    let chunk_size = (max_rows / rayon::current_num_threads()).max(80);
-    let processed_rows: Vec<Vec<Cell>> = records
-        .par_chunks(chunk_size)
-        .enumerate()
-        .flat_map(|(chunk_idx, chunk)| {
-            chunk.par_iter().enumerate().map(move |(row_idx, row)| {
-                let global_idx = chunk_idx * chunk_size + row_idx;
-                if global_idx >= max_rows {
-                    return vec![];
-                }
-                process_row(row, global_idx, args, scheme)
-            })
-        })
-        .filter(|row| !row.is_empty())
-        .collect();
+    for (row_idx, record) in limited_records.iter().enumerate() {
+        let mut row_cells = Vec::new();
 
-    for row in processed_rows {
-        table.add_row(row);
+        if args.show_row_numbers {
+            row_cells.push(Cell::new(&format!("{}", row_idx + 1)).fg(scheme.header_color()));
+        }
+
+        for value in record {
+            let data_type = detect_data_type_cached(value);
+            let color = scheme.cell_color(&data_type);
+            row_cells.push(Cell::new(value).fg(color));
+        }
+
+        table.add_row(row_cells);
     }
+
     table
 }
 
-fn process_row(row: &[String], idx: usize, args: &Args, scheme: &ColorScheme) -> Vec<Cell> {
-    let mut cells = Vec::with_capacity(row.len() + if args.show_row_numbers { 1 } else { 0 });
-
-    if args.show_row_numbers {
-        cells.push(Cell::new((idx + 1).to_string()).fg(ColorScheme::rgb(&scheme.bright.aqua)));
-    }
-
-    let field_cells: Vec<Cell> = row
-        .par_iter()
-        .map(|field| {
-            let max_width = args.max_width.unwrap_or(usize::MAX);
-            let txt = if field.len() > max_width {
-                format!("{}...", &field[..max_width.saturating_sub(3)])
-            } else {
-                field.clone()
-            };
-
-            let data_type = detect_data_type_cached(&txt);
-            Cell::new(txt).fg(scheme.cell_color(&data_type))
-        })
-        .collect();
-
-    cells.extend(field_cells);
-    cells
-}
-
-fn print_file_info(path: &str, rows: usize, cols: usize) {
-    println!(
-        "{}",
-        "CSV File Information".with(CrosstermColor::Cyan).bold()
-    );
-    println!(
-        "{} {}",
-        "File:".with(CrosstermColor::Blue),
-        path.with(CrosstermColor::White)
-    );
-    println!(
-        "{} {}",
-        "Rows:".with(CrosstermColor::Blue),
-        rows.to_string().with(CrosstermColor::Green)
-    );
-    println!(
-        "{} {}",
-        "Columns:".with(CrosstermColor::Blue),
-        cols.to_string().with(CrosstermColor::Green)
-    );
-    println!();
-}
-
-fn print_footer(displayed: usize, total: usize) {
-    if displayed < total {
-        println!();
-        println!(
-            "{} {} {} {} {} {}",
-            "Showing".with(CrosstermColor::Yellow),
-            displayed.to_string().with(CrosstermColor::White),
-            "of".with(CrosstermColor::Yellow),
-            total.to_string().with(CrosstermColor::White),
-            "rows. Use".with(CrosstermColor::Yellow),
-            "-n 0".with(CrosstermColor::Green)
-        );
-        println!("{}", "to show all rows.".with(CrosstermColor::Yellow));
-    }
-}
-
-fn process_large_file(
-    file: File,
-    args: &Args,
-    scheme: &Arc<ColorScheme>,
-    delim: char,
-) -> Result<()> {
-    let mut reader = StreamingCsvReader::new(file, delim as u8, !args.no_header)?;
-    let (tx, rx) = bounded(4);
-
-    let reader_handle = std::thread::spawn(move || {
-        while let Ok(chunk) = reader.read_chunk() {
-            if chunk.is_empty() {
-                break; // Channel closed
-            }
-
-            if tx.send(chunk).is_err() {
-                break; // Receiver dropped
-            }
-        }
-    });
-
-    let mut total_rows = 0;
-    let mut first_chunk = true;
-
-    while let Ok(chunk) = rx.recv() {
-        total_rows += chunk.len();
-
-        if first_chunk {
-            print_file_info(
-                &args.file,
-                total_rows,
-                chunk.first().map(|r| r.len()).unwrap_or(0),
-            );
-            first_chunk = false;
-        }
-
-        let table = create_table(&chunk, None, args, &scheme);
-        println!("{table}");
-        if args.max_rows > 0 && total_rows >= args.max_rows {
-            break; // Stop if max rows reached
-        }
-    }
-    reader_handle.join().unwrap();
-    Ok(())
-}
-
-fn process_small_file(
-    file: File,
-    args: &Args,
-    scheme: &Arc<ColorScheme>,
-    delim: char,
-) -> Result<()> {
-    let mut rdr = ReaderBuilder::new()
-        .delimiter(delim as u8)
-        .has_headers(!args.no_header)
-        .from_reader(file);
-
-    let headers = if args.no_header {
-        None
-    } else {
-        Some(
-            rdr.headers()?
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<String>>(),
-        )
-    };
-
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    for rec in rdr.records() {
-        let rec = rec?;
-        rows.push(rec.iter().map(|s| s.to_string()).collect());
-    }
-
-    let total_rows = rows.len();
-    let total_cols = headers
-        .as_ref()
-        .map(|h| h.len())
-        .or_else(|| rows.first().map(|r| r.len()))
-        .unwrap_or(0);
-
-    print_file_info(&args.file, total_rows, total_cols);
-
-    let table = create_table(&rows, headers.as_deref(), args, scheme);
-    println!("{table}");
-
-    let shown = if args.max_rows == 0 {
-        total_rows
-    } else {
-        args.max_rows.min(total_rows)
-    };
-
-    print_footer(shown, total_rows);
-    Ok(())
-}
-
-fn main() -> Result<()> {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(num_cpus::get() + 2)
-        .build_global()
-        .unwrap();
-
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let scheme = Arc::new(load_scheme(args.colorscheme.as_deref())?);
+    let scheme = load_config(args.config.as_deref());
+    let (headers, records) = read_csv_data(&args.input)?;
+    let table = create_table(headers, records, &scheme, &args);
 
-    let delim = args
-        .delimiter
-        .chars()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Delimiter must be a single character"))?;
-
-    let file = File::open(&args.file)
-        .map_err(|e| anyhow::anyhow!("Failed to open file '{}': {}", args.file, e))?;
-
-    let metadata = file.metadata()?;
-    let use_streaming = metadata.len() > 100 * 1024 * 1024;
-
-    if use_streaming {
-        process_large_file(file, &args, &scheme, delim)
-    } else {
-        process_small_file(file, &args, &scheme, delim)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn datatype_detection() {
-        assert!(matches!(detect_data_type(""), DataType::Empty));
-        assert!(matches!(detect_data_type("false"), DataType::Boolean));
-        assert!(matches!(detect_data_type("123"), DataType::Number));
-        assert!(matches!(detect_data_type("2023-06-20"), DataType::Date));
-        assert!(matches!(detect_data_type("hello"), DataType::Text));
-    }
+    println!("{}", table);
+    Ok(())
 }
