@@ -8,6 +8,7 @@ type HexColor = String;
 pub struct ColorScheme {
     pub data_types: DataTypeColors,
     pub header: HexColor,
+    pub pager: Option<PagerConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -18,6 +19,12 @@ pub struct DataTypeColors {
     pub int_number: HexColor,
     pub boolean: HexColor,
     pub empty: HexColor,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PagerConfig {
+    pub scroll_single_line: usize,
+    pub scroll_multi_line: usize,
 }
 
 impl Default for ColorScheme {
@@ -32,6 +39,10 @@ impl Default for ColorScheme {
                 empty: "#585B70".to_string(),
             },
             header: "#CBB6F7".to_string(),
+            pager: Some(PagerConfig {
+                scroll_single_line: 1,
+                scroll_multi_line: 10,
+            }),
         }
     }
 }

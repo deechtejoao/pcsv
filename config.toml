@@ -1,0 +1,9 @@
+data_types = { text = "#BACEDF", date = "#FAB387", float_number = "#89B4FA", int_number = "#A6E3A1", boolean = "#F9E2AF", empty = "#585B70" }
+
+# Header color
+header = "#CBB6F7"
+
+# Pager configuration
+[pager]
+scroll_single_line = 1     # Lines to scroll with 'j' and 'k'
+scroll_multi_line = 10     # Lines to scroll with 'J' and 'K'

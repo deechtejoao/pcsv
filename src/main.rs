@@ -1,13 +1,15 @@
 use clap::Parser;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
-use config::{load_config, ColorScheme};
+use config::{load_config, ColorScheme, PagerConfig};
+use pager::Pager;
 use regex::Regex;
 use std::fs;
 use std::io::{self, Read};
 use std::sync::OnceLock;
 
 mod config;
+mod pager;
 
 #[derive(Debug, Clone)]
 enum DataType {
@@ -59,6 +61,9 @@ struct Args {
 
     #[arg(short, long)]
     max_rows: Option<usize>,
+
+    #[arg(short, long)]
+    pager: bool,
 }
 
 static DATA_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
@@ -182,12 +187,48 @@ fn create_table(
     table
 }
 
+fn create_table_lines(
+    headers: Option<Vec<String>>,
+    records: Vec<Vec<String>>,
+    scheme: &ColorScheme,
+    args: &Args,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    
+    // Create a temporary table to get the formatted output
+    let table = create_table(headers.clone(), records, scheme, args);
+    let table_string = table.to_string();
+    
+    // Split the table into lines
+    for line in table_string.lines() {
+        lines.push(line.to_string());
+    }
+    
+    lines
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let scheme = load_config(args.config.as_deref());
     let (headers, records) = read_csv_data(&args.input)?;
-    let table = create_table(headers, records, &scheme, &args);
 
-    println!("{}", table);
+    if args.pager {
+        // Use pager mode
+        let table_lines = create_table_lines(headers, records, &scheme, &args);
+        let total_rows = table_lines.len();
+        
+        let pager_config = scheme.pager.unwrap_or_else(|| PagerConfig {
+            scroll_single_line: 1,
+            scroll_multi_line: 10,
+        });
+        
+        let mut pager = Pager::new(table_lines, None, total_rows, pager_config)?;
+        pager.run()?;
+    } else {
+        // Use normal table display
+        let table = create_table(headers, records, &scheme, &args);
+        println!("{}", table);
+    }
+    
     Ok(())
 }
